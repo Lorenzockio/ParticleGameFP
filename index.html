@@ -143,10 +143,10 @@
                     next = p.pos + (2. / res) * vel;
                 }
             }
-        }
 
-        state[i].pos = next;
-        state[i].vel = vel;
+            state[i].pos = next;
+            state[i].vel = vel;
+        }
 
         //reset when flipped upside down
         if(i == 0u && sliders.z >= 0.9) {
