@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang=en>
+  <head>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background: black;
+        }
+    </style>
+  </head>
+  <body style='margin:0'>
+    <canvas></canvas>
+  </body>
+  <script type='module'>
+  //import {default as seagulls} from 'https://cb.githack.com/charlieroberts/seagulls/raw/branch/main/seagulls.js'
+  import {default as seagulls} from './seagulls.js' 
+
+  const sg = await seagulls.init()
+  
+  const compute_shader = `
+    struct Particle {
+        pos: vec2f,
+        vel: vec2f, 
+        ptype: f32,
+        level: f32,
+        startPos: vec2f, //used for enemy 
+    };
+
+    @group(0) @binding(0) var<uniform> res:   vec2f;
+    @group(0) @binding(1) var<storage, read_write> state: array<Particle>;
+    @group(0) @binding(2) var<uniform> sliders : vec3f;
+    
+    fn cellindex( cell:vec3u ) -> u32 {
+        let size = 8u;
+        return cell.x + (cell.y * size) + (cell.z * size * size);
+    }
+
+    fn squareCollision(circlePos: vec2f, squarePos: vec2f, radius: f32, halfSize: vec2f) -> bool {
+        let diff = circlePos - squarePos;
+        let closest = vec2f(clamp(diff.x, -halfSize.x, halfSize.x),clamp(diff.y, -halfSize.y, halfSize.y));
+        let closestPoint = squarePos + closest;
+        let difference = circlePos - closestPoint;
+        return dot(difference, difference) <= radius * radius;
+    }
+
+    fn circleCollision(posA: vec2f, posB: vec2f, radiusA: f32, radiusB: f32) -> bool {
+        let diff = posA - posB;
+        let r = radiusA + radiusB;
+        return dot(diff, diff) <= r * r;
+    }
+
+    fn reset() {
+        state[0].pos = vec2f(-0.5, 0);
+        state[0].level = 1.0;
+    }
+
+    @compute
+    @workgroup_size(8,8)
+    fn cs(@builtin(global_invocation_id) cell:vec3u)  {
+        let i = cellindex( cell );
+        let p = state[ i ];
+        var vel = p.vel;
+        var next = p.pos;
+        if(p.ptype == 2.0 && state[0].level == 1.0) {
+            state[i].pos = p.startPos;
+            state[i].vel = vec2f(0.0, 0.0);
+            return;
+        }
+        if ( p.ptype == 0. ) {
+            vel.x += sliders.x * 0.1;
+            vel.x = clamp( vel.x, -4., 4. );
+            vel.y += sliders.y * 0.1;
+            vel.y = clamp( vel.y, -4., 4. );
+
+            next = p.pos + (2. / res) * vel;
+
+            if( next.y <= -1. ) {
+                //next.y = -1.;
+                vel.y *= -1.;
+            }
+            if( next.y >= 1. ) {
+                //next.y = 1.;
+                vel.y *= -1.;
+            }
+            if( next.x >= 1. ) {
+                //next.x = 1.;
+                vel.x *= -1.;
+            }
+            if( next.x <= -1. ) {
+                //next.x = -1.;
+                vel.x *= -1.;
+            }
+        }
+
+        state[i].pos = next;
+        state[i].vel = vel;
+
+        if(p.ptype == 1.0 && p.level == state[0].level) {
+            let circle = state[0];
+            let circleRadius = 0.15;
+            let squareHalf = vec2f(0.1 * res.y / res.x, 0.1);
+
+            if(squareCollision(circle.pos, next, circleRadius, squareHalf)) {   
+                state[0].level += 1.0;
+            }
+        }
+
+        if(p.ptype == 2.0 && p.level <= state[0].level) {
+            if(state[i].pos.x < state[0].pos.x) {
+                vel.x += 0.05;
+            } else {
+                vel.x -= 0.05;
+            }
+             if(state[i].pos.y < state[0].pos.y) {
+                vel.y += 0.05;
+            } else {
+                vel.y -= 0.05;
+            }
+            vel.x = clamp( vel.x, -2., 2. );
+            vel.y = clamp( vel.y, -2., 2. );
+            next = p.pos + (2. / res) * vel;
+
+            var circle = state[0];
+            let radiusA = 0.05 * (res.y / res.x);
+            let radiusB = 0.15 * (res.y / res.x);
+            if(circleCollision(circle.pos, next, radiusA, radiusB)) {
+                reset();
+                return;
+            }
+
+            for ( var j = 31u; j < 41u; j++ ) {
+                if (j == i ){
+                    continue;
+                }
+                circle = state[j];
+                if(circle.level > state[0].level) {
+                    continue;
+                }
+                if(circleCollision(circle.pos, next, radiusA, radiusA)) {
+                    let normal = normalize(next - circle.pos);
+                    vel = reflect(vel, normal) * 0.5; 
+                    next = p.pos + (2. / res) * vel;
+                }
+            }
+        }
+
+        state[i].pos = next;
+        state[i].vel = vel;
+
+        //reset when flipped upside down
+        if(i == 0u && sliders.z >= 0.9) {
+            reset();
+            return;
+        }
+    }
+  `
+
+  const render_shader = `
+    struct VertexInput {
+        @location(0) pos: vec2f,
+        @builtin(instance_index) instance: u32,
+    };
+
+    struct VertexOutput {
+        @builtin(position) pos: vec4f,
+        @location(0) uv: vec2f,
+        @location(1) ptype: f32,
+        @location(2) level: f32,
+    };
+
+    struct Particle {
+        pos: vec2f,
+        vel: vec2f, 
+        ptype: f32,
+        level: f32,
+        pad1: f32,
+        pad2: f32,   
+    };
+
+
+    @group(0) @binding(0) var<uniform> frame: f32;
+    @group(0) @binding(1) var<uniform> res:   vec2f;
+    @group(0) @binding(2) var<storage> state: array<Particle>;
+
+    @vertex 
+    fn vs( input: VertexInput ) -> VertexOutput {
+    var out: VertexOutput;
+    let p = state[ input.instance ];
+    var size = input.pos;
+    if( p.ptype == 0. ) {
+        size *= 0.15;
+    } 
+    if( p.ptype > 0. ) {
+        size *= 0.1;
+        if( p.ptype == 2.) {
+            size *= 0.5;
+        }
+    }
+
+    let aspect = res.y / res.x;
+    out.pos = vec4f( p.pos.x - size.x * aspect, p.pos.y + size.y, 0., 1.);
+    out.uv = input.pos;
+    out.ptype = p.ptype;
+    out.level = p.level;
+    return out;
+    }
+
+    @fragment 
+    fn fs(input: VertexOutput) -> @location(0) vec4f {
+        var color = vec3f(0.0, 0.0, 0.0);
+        var alpha = 1.0;
+        
+        if(input.ptype == 0.0) {
+            color = vec3f(0.0, 1.0, 0.0);
+        }
+        if(input.ptype == 1.0) {
+            color = vec3f(0.0, 0.0, 1.0);
+        }
+        if(input.ptype == 2.0) {
+            color = vec3f(1.0, 0.0, 0.0);
+        }
+        if(input.ptype != 1.0) {
+            let dist = length(input.uv);
+            if(dist > 1.0) { discard; }
+        }
+        if (input.level != state[0].level) {
+            alpha = 0.0;
+            if (input.ptype == 2.0 && input.level < state[0].level) {
+                alpha = 1;
+            }
+        }
+        return vec4f(color, alpha); 
+    }`
+
+  const NUM_PARTICLES = 41 
+  const NUM_PROPERTIES = 8
+  const state = new Float32Array( NUM_PARTICLES * NUM_PROPERTIES)
+
+  state[0] = -0.5 //pos x
+  state[1] = 0 //pos y
+  state[2] = 0 //vel x
+  state[3] = 0 //vel y
+  state[4] = 0 //particle type
+  state[5] = 1 //level
+  state[6] = 0    // pad1
+  state[7] = 0    // pad2
+
+  for( let i = 1; i <= 30; i++ ) {
+    state[ i * NUM_PROPERTIES ] = -1. + Math.random() + (i % 2)
+    state[ i * NUM_PROPERTIES + 1 ] = -1. + Math.random() * 2
+    state[ i * NUM_PROPERTIES + 2 ] = 0
+    state[ i * NUM_PROPERTIES + 3 ] = 0
+    state[ i * NUM_PROPERTIES + 4 ] = 1 //type
+    state[ i * NUM_PROPERTIES + 5 ] = i //level
+  }
+
+  for( let i = 31; i < 41; i++ ) {
+    state[ i * NUM_PROPERTIES ] = -1.5 + (i % 2) * 3
+    state[ i * NUM_PROPERTIES + 1 ] = 0
+    state[ i * NUM_PROPERTIES + 2 ] = 0
+    state[ i * NUM_PROPERTIES + 3 ] = 0
+    state[ i * NUM_PROPERTIES + 4 ] = 2
+    state[ i * NUM_PROPERTIES + 5 ] = (i - 30) * 3
+    state[ i * NUM_PROPERTIES + 6 ] = -1.5 + (i % 2) * 3
+    state[ i * NUM_PROPERTIES + 7 ] = 0
+  }
+  const sliders = sg.uniform([0,0,0])
+
+  const state_b = sg.buffer( state )
+  const frame_u = sg.uniform( 0 )
+  const res_u   = sg.uniform([ sg.width, sg.height ])
+
+  const render = await sg.render({
+  shader: render_shader,
+  data: [
+    frame_u,
+    res_u,
+    state_b
+  ],
+  onframe() { 
+    frame_u.value++ 
+  },
+    count: NUM_PARTICLES,
+    blend: true
+  })
+
+  const dc = Math.ceil( NUM_PARTICLES / 64 )
+
+  const compute = sg.compute({
+    shader: compute_shader,
+    data:[
+      res_u,
+      state_b,
+      sliders
+    ],
+    dispatchCount: [ dc, dc, 1 ]
+  })
+
+  sg.run( compute, render )
+
+  let ws = new WebSocket( 'ws://127.0.0.1:8080' )
+
+  // when connection is established...
+  ws.onopen = () => {
+    ws.send( 'a new client has connected.' )
+    ws.onmessage = msgbuffer => {
+      const msg = JSON.parse( msgbuffer.data )
+
+      switch( msg.address ) {
+        case '/data/motion/accelerometer/x':
+          console.log( 'x:', msg.args[0].value )
+          sliders[0] = msg.args[0].value;
+          break;
+        case '/data/motion/accelerometer/y':
+          console.log( 'y:', msg.args[0].value )
+          sliders[1] = msg.args[0].value;
+          break;
+        case '/data/motion/accelerometer/z':
+          console.log( 'z:', msg.args[0].value )
+          sliders[2] = msg.args[0].value;
+          break;
+      }
+    }
+  }
+  </script>
+</html>
