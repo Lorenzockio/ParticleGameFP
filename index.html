@@ -257,13 +257,13 @@
 
   for( let i = 31; i < 41; i++ ) {
     state[ i * NUM_PROPERTIES ] = -1.5 + (i % 2) * 3
-    state[ i * NUM_PROPERTIES + 1 ] = 0
+    state[ i * NUM_PROPERTIES + 1 ] = Math.random() * 2 - 1
     state[ i * NUM_PROPERTIES + 2 ] = 0
     state[ i * NUM_PROPERTIES + 3 ] = 0
     state[ i * NUM_PROPERTIES + 4 ] = 2
     state[ i * NUM_PROPERTIES + 5 ] = (i - 30) * 3
     state[ i * NUM_PROPERTIES + 6 ] = -1.5 + (i % 2) * 3
-    state[ i * NUM_PROPERTIES + 7 ] = 0
+    state[ i * NUM_PROPERTIES + 7 ] = state[ i * NUM_PROPERTIES + 1 ]
   }
   const sliders = sg.uniform([0,0,0])
 
